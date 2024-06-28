@@ -97,7 +97,7 @@ def run_simulation(pdb_file, n_copies, output_prefix, sim_id):
     simulation.reporters.append(DCDReporter(f"{output_prefix}_sim{sim_id}.dcd", 1000))
     simulation.reporters.append(StateDataReporter(sys.stdout, 1000, step=True, potentialEnergy=True, temperature=True, speed=True))
 
-    simulation.step(5000000)
+    simulation.step(500000000)
 
 def main(pdb_file, n_copies, nsims, output_prefix):
     threads = []
