@@ -31,11 +31,11 @@ def get_features(traj_file, top_file):
     labels += ['backbone\ndistances']
 
     side_torsions_feat = pyemma.coordinates.featurizer(top_file)
-    side_torsions_feat.add_sidechain_torsions(cossin=True)
+    side_torsions_feat.add_sidechain_torsions(cossin=True, periodic=True)
     side_torsions_data = pyemma.coordinates.load(traj_file, features=side_torsions_feat)
     labels += ['side\ntorsions']
 
-    back_torsions_feat.add_sidechain_torsions(cossin=True)
+    back_torsions_feat.add_sidechain_torsions(cossin=True, periodic=True)
     all_torsion_data = pyemma.coordinates.load(traj_file, features=back_torsions_feat).tolist()
     labels += ['all\ntorsions']
 
@@ -54,6 +54,7 @@ def plot_detailed_vamp2(data):
         color = 'C{}'.format(i)
         ax.fill_between(dims, scores - errors, scores + errors, alpha=0.3, facecolor=color)
         ax.plot(dims, scores, '--o', color=color, label='lag={:.1f}ns'.format(lag * 0.1))
+        
     ax.legend()
     ax.set_xlabel('number of dimensions')
     ax.set_ylabel('VAMP2 score')
@@ -162,7 +163,7 @@ def determine_cluster_number(data):
     print(n_clustercenters[cluster_index])
     return n_clustercenters[cluster_index]
 
-def cluster(data, n_centers):
+def cluster_it(data, n_centers):
     print(n_centers)
     data=data[0]
     cluster = pyemma.coordinates.cluster_kmeans(
@@ -177,6 +178,27 @@ def cluster(data, n_centers):
     ax.set_ylabel('IC 2')
     fig.tight_layout()
     plt.savefig('projected_clusters')
+
+    return cluster
+
+def plot_implied_timescales(cluster):
+    its = pyemma.msm.its(cluster.dtrajs, lags=50, nits=10, errors='bayes')
+    pyemma.plots.plot_implied_timescales(its, units='ns', dt=0.3)
+    plt.savefig('impled_timescales')
+
+def make_msm(cluster):
+    msm = pyemma.msm.bayesian_markov_model(cluster.dtrajs, lag=10, dt_traj='0.1 ns')
+    print('fraction of states used = {:.2f}'.format(msm.active_state_fraction))
+    print('fraction of counts used = {:.2f}'.format(msm.active_count_fraction))
+
+    return msm
+
+def ck_test(msm):
+    nstates = 10
+    cktest = msm.cktest(nstates, mlags=6)
+    print(cktest)
+    pyemma.plots.plot_cktest(cktest, dt=0.3, units='ns')
+    plt.savefig('ck_test.png')
 
 def main():
     args = get_args()
@@ -217,7 +239,11 @@ def main():
     print('Determining cluster number')
     cluster_k = determine_cluster_number(reduced_data)
 
-    cluster(reduced_data, cluster_k)
+    clustered_data = cluster_it(reduced_data, cluster_k)
+
+    plot_implied_timescales(clustered_data)
+    msm = make_msm(clustered_data)
+    ck_test(msm)
 
 if __name__ == "__main__":
     main()
