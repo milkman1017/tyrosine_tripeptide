@@ -41,7 +41,7 @@ def get_features(traj_file, top_file):
 
     return back_torsions_data, distances_data, side_torsions_data, all_torsion_data, labels
 
-def plot_detailed_vamp2(data):
+def plot_detailed_vamp2(data, args):
     lags = [1, 2, 5, 10, 20]
     dims = [i + 1 for i in range(10)]
 
@@ -59,7 +59,7 @@ def plot_detailed_vamp2(data):
     ax.set_xlabel('number of dimensions')
     ax.set_ylabel('VAMP2 score')
     fig.tight_layout()
-    plt.savefig('VAMP2_scores_for_dimensions')
+    plt.savefig(f'{args.sim_name}_VAMP2_scores_for_dimensions')
 
 def score_cv(data, dim, lag=1, number_of_splits=10, validation_fraction=0.5):
     nval = int(len(data) * validation_fraction)
@@ -72,7 +72,7 @@ def score_cv(data, dim, lag=1, number_of_splits=10, validation_fraction=0.5):
 
     return scores
 
-def plot_vamp2_scores(data, dim, lags=[5, 10, 20]):
+def plot_vamp2_scores(data, dim, args, lags=[5, 10, 20]):
     plt.figure(figsize=(18, 6))
     feature_keys = list(data.keys())
 
@@ -90,17 +90,17 @@ def plot_vamp2_scores(data, dim, lags=[5, 10, 20]):
         plt.ylabel('Average VAMP2 Score')
     
     plt.tight_layout()
-    plt.savefig('VAMP2_Scores_for_Features')
+    plt.savefig(f'{args.sim_name}_VAMP2_Scores_for_Features')
 
     max_value = max(avg_scores)
     highest_vamp_index = [index for index, value in enumerate(avg_scores) if value == max_value][0]
     
     data_to_MSM = data[feature_keys[highest_vamp_index]]
-    plot_detailed_vamp2(data_to_MSM)
+    plot_detailed_vamp2(data_to_MSM, args)
 
     return data_to_MSM
 
-def TICA(data):
+def TICA(data, args):
     tica = pyemma.coordinates.tica(data, lag=20)
     tica_output = tica.get_output()
     tica_concatenated = np.concatenate(tica_output)
@@ -119,7 +119,7 @@ def TICA(data):
         axes[1].set_xlabel('IC 1')
         axes[1].set_ylabel('IC 2')
         fig.tight_layout()
-        plt.savefig('IC_coverage')
+        plt.savefig(f'{args.sim_name}_IC_coverage')
     except:
         print('Too many dims')
 
@@ -130,11 +130,11 @@ def TICA(data):
         ax.set_ylabel('IC {}'.format(i + 1))
     axes[-1].set_xlabel('time / ns')
     fig.tight_layout()
-    plt.savefig('IC_time_series')
+    plt.savefig(f'{args.sim_name}_IC_time_series')
 
     return tica_output
 
-def determine_cluster_number(data):
+def determine_cluster_number(data, args):
     n_clustercenters = [5, 10, 30, 50, 75]
 
     scores = np.zeros((len(n_clustercenters), 5))
@@ -154,16 +154,19 @@ def determine_cluster_number(data):
     ax.set_xlabel('number of cluster centers')
     ax.set_ylabel('VAMP-2 score')
     fig.tight_layout()
-    plt.savefig('clusters')
+    plt.savefig(f'{args.sim_name}_clusters')
 
     differences = np.abs(np.diff(np.mean(scores, axis=1)))
 
     # Find the index where the change falls below the threshold
-    cluster_index = np.argmax(differences < 1.0)
+    cluster_index = np.argmax(differences < 0.5) + 1
     print(n_clustercenters[cluster_index])
-    return n_clustercenters[cluster_index]
+    # return n_clustercenters[cluster_index]
 
-def cluster_it(data, n_centers):
+    ###remember to uncomment out the above after finishing testing###
+    return 25
+
+def cluster_it(data, n_centers, args):
     print(n_centers)
     data=data[0]
     cluster = pyemma.coordinates.cluster_kmeans(
@@ -177,14 +180,14 @@ def cluster_it(data, n_centers):
     ax.set_xlabel('IC 1')
     ax.set_ylabel('IC 2')
     fig.tight_layout()
-    plt.savefig('projected_clusters')
+    plt.savefig(f'{args.sim_name}_projected_clusters')
 
-    return cluster
+    return cluster, dtrajs_concatenated
 
-def plot_implied_timescales(cluster):
+def plot_implied_timescales(cluster, args):
     its = pyemma.msm.its(cluster.dtrajs, lags=50, nits=10, errors='bayes')
     pyemma.plots.plot_implied_timescales(its, units='ns', dt=0.3)
-    plt.savefig('impled_timescales')
+    plt.savefig(f'{args.sim_name}_impled_timescales')
 
 def make_msm(cluster):
     msm = pyemma.msm.bayesian_markov_model(cluster.dtrajs, lag=10, dt_traj='0.1 ns')
@@ -193,12 +196,125 @@ def make_msm(cluster):
 
     return msm
 
-def ck_test(msm):
+def ck_test(msm, args):
     nstates = 10
     cktest = msm.cktest(nstates, mlags=6)
     print(cktest)
     pyemma.plots.plot_cktest(cktest, dt=0.3, units='ns')
-    plt.savefig('ck_test.png')
+    plt.savefig(f'{args.sim_name}_ck_test.png')
+
+def its_separation_err(ts, ts_err):
+    """
+    Error propagation from ITS standard deviation to timescale separation.
+    """
+    return ts[:-1] / ts[1:] * np.sqrt(
+        (ts_err[:-1] / ts[:-1])**2 + (ts_err[1:] / ts[1:])**2)
+
+def plot_its_separation(msm, args):
+    nits = 10
+
+    timescales_mean = msm.sample_mean('timescales', k=nits)
+    timescales_std = msm.sample_std('timescales', k=nits)
+    nits = len(timescales_mean)
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+    axes[0].errorbar(
+        range(1, nits + 1),
+        timescales_mean,
+        yerr=timescales_std,
+        fmt='.', markersize=10)
+    axes[1].errorbar(
+        range(1, nits),
+        timescales_mean[:-1] / timescales_mean[1:],
+        yerr=its_separation_err(
+            timescales_mean,
+            timescales_std),
+        fmt='.',
+        markersize=10,
+        color='C0')
+
+    for i, ax in enumerate(axes):
+        ax.set_xticks(range(1, nits + 1))
+        ax.grid(True, axis='x', linestyle=':')
+
+    axes[0].axhline(msm.lag * 0.1, lw=1.5, color='k')
+    axes[0].axhspan(0, msm.lag * 0.1, alpha=0.3, color='k')
+    axes[0].set_xlabel('implied timescale index')
+    axes[0].set_ylabel('implied timescales / ns')
+    axes[1].set_xticks(range(1, nits))
+    axes[1].set_xlabel('implied timescale indices')
+    axes[1].set_ylabel('timescale separation')
+    fig.tight_layout()
+    plt.savefig(f'{args.sim_name}_timescale_separation.png')
+
+def plot_stationary_distribution(msm, tica, dtrajs_concatenated, args):
+    tica_concatenated = np.concatenate(tica)
+    
+    # Filter valid indices
+    valid_indices = np.where(dtrajs_concatenated < len(msm.pi))[0]
+    valid_dtrajs = dtrajs_concatenated[valid_indices]
+    valid_tica_concatenated = tica_concatenated[valid_indices]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
+    
+    # Ensure shapes are compatible for contour plot
+    if len(valid_tica_concatenated[:, 0]) == len(msm.pi[valid_dtrajs]):
+        pyemma.plots.plot_contour(
+            *valid_tica_concatenated[:, :2].T,
+            msm.pi[valid_dtrajs],
+            ax=axes[0],
+            mask=True,
+            cbar_label='stationary distribution')
+    else:
+        print("Mismatch in lengths for contour plot. Skipping this plot.")
+    
+    # Ensure shapes are compatible for free energy plot
+    if len(valid_tica_concatenated[:, 0]) == len(np.concatenate(msm.trajectory_weights())[valid_indices]):
+        pyemma.plots.plot_free_energy(
+            *valid_tica_concatenated[:, :2].T,
+            weights=np.concatenate(msm.trajectory_weights())[valid_indices],
+            ax=axes[1],
+            legacy=False)
+    else:
+        print("Mismatch in lengths for free energy plot. Skipping this plot.")
+    
+    for ax in axes.flat:
+        ax.set_xlabel('IC 1')
+    axes[0].set_ylabel('IC 2')
+    axes[0].set_title('Stationary distribution', fontweight='bold')
+    axes[1].set_title('Reweighted free energy surface', fontweight='bold')
+    fig.tight_layout()
+    plt.savefig(f'{args.sim_name}_stationary_distribution.png')
+
+def plot_metastable_states(msm, tica, dtrajs_concatenated, nstates, args):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import pyemma
+
+    print('PCCA')
+    nstates = msm.nstates
+    pcca = msm.pcca(nstates)
+    pcca_states = pcca.n_metastable
+
+    tica_concatenated = np.concatenate(tica)
+    
+    valid_indices = np.where(dtrajs_concatenated < len(msm.pi))[0]
+    valid_dtrajs = dtrajs_concatenated[valid_indices]
+
+    print('Metastable assignment')
+    metastable_traj = msm.metastable_assignments[valid_dtrajs]
+
+    filtered_tica = tica_concatenated[valid_indices, :2]
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    _, _, misc = pyemma.plots.plot_state_map(
+        *filtered_tica.T, metastable_traj, ax=ax)
+    ax.set_xlabel('IC 1')
+    ax.set_ylabel('IC 2')
+    misc['cbar'].set_ticklabels([r'$\mathcal{S}_%d$' % (i + 1) for i in range(pcca_states)])
+    fig.tight_layout()
+    plt.savefig(f'{args.sim_name}_metastable_state_assignment.png')
 
 def main():
     args = get_args()
@@ -231,19 +347,31 @@ def main():
     data_to_score['all_torsions'] = data['all_torsions']
 
     print('VAMP it up (it up!)')
-    data_to_MSM = plot_vamp2_scores(data_to_score, 10)
+    data_to_MSM = plot_vamp2_scores(data_to_score, 10, args)
 
     print('TICA it up!')
-    reduced_data = TICA(data_to_MSM)
+    reduced_data = TICA(data_to_MSM, args)
 
     print('Determining cluster number')
-    cluster_k = determine_cluster_number(reduced_data)
+    cluster_k = determine_cluster_number(reduced_data, args)
 
-    clustered_data = cluster_it(reduced_data, cluster_k)
+    clustered_data, dtrajs = cluster_it(reduced_data, cluster_k, args)
 
-    plot_implied_timescales(clustered_data)
+    plot_implied_timescales(clustered_data, args)
+
+    print('Buliding MSM')
     msm = make_msm(clustered_data)
-    ck_test(msm)
+
+    print('CK test')
+    # ck_test(msm, args)
+
+    print('Getting implied time scales')
+    # plot_its_separation(msm, args)
+
+    print('plotting stationary distribution')
+    # plot_stationary_distribution(msm, reduced_data, dtrajs, args)
+
+    plot_metastable_states(msm, reduced_data, dtrajs, cluster_k, args)
 
 if __name__ == "__main__":
     main()
