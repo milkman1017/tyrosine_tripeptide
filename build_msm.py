@@ -39,7 +39,7 @@ def get_features(traj_file, top_file):
     all_torsion_data = pyemma.coordinates.load(traj_file, features=back_torsions_feat).tolist()
     labels += ['all\ntorsions']
 
-    return back_torsions_data, distances_data, side_torsions_data, all_torsion_data, labels
+    return back_torsions_data, distances_data, side_torsions_data, all_torsion_data, labels, back_torsions_feat
 
 def plot_detailed_vamp2(data, args):
     lags = [1, 2, 5, 10, 20]
@@ -101,7 +101,7 @@ def plot_vamp2_scores(data, dim, args, lags=[5, 10, 20]):
     return data_to_MSM
 
 def TICA(data, args):
-    tica = pyemma.coordinates.tica(data, lag=20)
+    tica = pyemma.coordinates.tica(data, lag=50)
     tica_output = tica.get_output()
     tica_concatenated = np.concatenate(tica_output)
 
@@ -144,7 +144,7 @@ def determine_cluster_number(data, args):
                 data, k=k, max_iter=50, stride=50)
             _msm = pyemma.msm.estimate_markov_model(_cl.dtrajs, 5)
             scores[n, m] = _msm.score_cv(
-                _cl.dtrajs, n=1, score_method='VAMP2', score_k=min(10, k))
+                _cl.dtrajs, n=1, score_method='VAMP2', score_k=min(5, k))
 
     fig, ax = plt.subplots()
     lower, upper = pyemma.util.statistics.confidence_interval(scores.T.tolist(), conf=0.9)
@@ -161,10 +161,8 @@ def determine_cluster_number(data, args):
     # Find the index where the change falls below the threshold
     cluster_index = np.argmax(differences < 0.5) + 1
     print(n_clustercenters[cluster_index])
-    # return n_clustercenters[cluster_index]
+    return n_clustercenters[cluster_index]
 
-    ###remember to uncomment out the above after finishing testing###
-    return 25
 
 def cluster_it(data, n_centers, args):
     print(n_centers)
@@ -187,7 +185,7 @@ def cluster_it(data, n_centers, args):
 def plot_implied_timescales(cluster, args):
     its = pyemma.msm.its(cluster.dtrajs, lags=50, nits=10, errors='bayes')
     pyemma.plots.plot_implied_timescales(its, units='ns', dt=0.3)
-    plt.savefig(f'{args.sim_name}_impled_timescales')
+    plt.savefig(f'{args.sim_name}_implied_timescales')
 
 def make_msm(cluster):
     msm = pyemma.msm.bayesian_markov_model(cluster.dtrajs, lag=10, dt_traj='0.1 ns')
@@ -197,16 +195,21 @@ def make_msm(cluster):
     return msm
 
 def ck_test(msm, args):
-    nstates = 10
-    cktest = msm.cktest(nstates, mlags=6)
-    print(cktest)
-    pyemma.plots.plot_cktest(cktest, dt=0.3, units='ns')
-    plt.savefig(f'{args.sim_name}_ck_test.png')
+    try:
+        nstates = 5
+        cktest = msm.cktest(nstates, mlags=6)
+
+        pyemma.plots.plot_cktest(cktest, dt=0.3, units='ns')
+        plt.savefig(f'{args.sim_name}_ck_test.png')
+    except:
+        nstates = 2
+        cktest = msm.cktest(nstates, mlags=6)
+
+        pyemma.plots.plot_cktest(cktest, dt=0.3, units='ns')
+        plt.savefig(f'{args.sim_name}_ck_test.png')
+
 
 def its_separation_err(ts, ts_err):
-    """
-    Error propagation from ITS standard deviation to timescale separation.
-    """
     return ts[:-1] / ts[1:] * np.sqrt(
         (ts_err[:-1] / ts[:-1])**2 + (ts_err[1:] / ts[1:])**2)
 
@@ -288,14 +291,11 @@ def plot_stationary_distribution(msm, tica, dtrajs_concatenated, args):
     plt.savefig(f'{args.sim_name}_stationary_distribution.png')
 
 def plot_metastable_states(msm, tica, dtrajs_concatenated, nstates, args):
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import pyemma
-
     print('PCCA')
     nstates = msm.nstates
     pcca = msm.pcca(nstates)
     pcca_states = pcca.n_metastable
+    print(f'PCCA Number of States: {pcca_states}')
 
     tica_concatenated = np.concatenate(tica)
     
@@ -316,6 +316,36 @@ def plot_metastable_states(msm, tica, dtrajs_concatenated, nstates, args):
     fig.tight_layout()
     plt.savefig(f'{args.sim_name}_metastable_state_assignment.png')
 
+    return pcca_states
+
+def save_states(msm, traj_files, feature):
+    pcca_samples = msm.sample_by_distributions(msm.metastable_distributions, 1)
+    torsions_source = pyemma.coordinates.source(traj_files, features=feature)
+    
+    outfiles = []
+    for n in range(msm.n_metastable):
+        if len(pcca_samples[n]) > 0:  # Check if there are samples for the state
+            outfiles.append('./pcca{}_1samples.pdb'.format(n + 1))
+        else:
+            print(f"No samples for metastable state {n + 1}")
+
+    try:
+        pyemma.coordinates.save_trajs(
+            torsions_source,
+            pcca_samples,
+            outfiles=outfiles
+        )
+    except:
+        print('lol')
+
+    if len(outfiles) < msm.n_metastable:
+        print("Warning: The actual number of saved states is less than n_metastable. Some states might have had too few data points.")
+
+def plot_markov_model(msm, args):
+    fig, ax = plt.subplots(figsize=(8, 6))
+    pyemma.plots.plot_markov_model(msm, ax=ax)
+    plt.savefig(f'{args.sim_name}_markov_model.png')
+
 def main():
     args = get_args()
 
@@ -326,12 +356,18 @@ def main():
     data['sidechain_torsions'] = []
     data['all_torsions'] = []
 
+    traj_files = []
+    top_files = []
+
     for sim_num in range(args.nsims):
         print(f'Featurizing Simulation {sim_num}')
         traj_file = f'{args.traj_dir}/{args.sim_name}{sim_num}.dcd'
         top_file = f'{args.traj_dir}/{args.sim_name}{sim_num}.pdb'
+
+        traj_files.append(traj_file)
+        top_files.append(top_file)
         
-        back_torsions_data, distances_data, side_torsions_data, all_torsion_data, labels = get_features(traj_file, top_file)
+        back_torsions_data, distances_data, side_torsions_data, all_torsion_data, labels, feature = get_features(traj_file, top_file)
         
         data['backbone_torsions'].extend(back_torsions_data)    
         data['distances'].extend(distances_data)
@@ -359,19 +395,24 @@ def main():
 
     plot_implied_timescales(clustered_data, args)
 
-    print('Buliding MSM')
+    print('Building MSM')
     msm = make_msm(clustered_data)
 
     print('CK test')
-    # ck_test(msm, args)
+    ck_test(msm, args)
 
     print('Getting implied time scales')
-    # plot_its_separation(msm, args)
+    plot_its_separation(msm, args)
 
-    print('plotting stationary distribution')
-    # plot_stationary_distribution(msm, reduced_data, dtrajs, args)
+    print('Plotting stationary distribution')
+    plot_stationary_distribution(msm, reduced_data, dtrajs, args)
 
-    plot_metastable_states(msm, reduced_data, dtrajs, cluster_k, args)
+    n_states = plot_metastable_states(msm, reduced_data, dtrajs, cluster_k, args)
+
+    save_states(msm, traj_files, feature)
+
+    print('Plotting Markov model')
+    plot_markov_model(msm, args)
 
 if __name__ == "__main__":
     main()
